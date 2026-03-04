@@ -1,20 +1,28 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client
 from dotenv import load_dotenv
 import os
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+try:
+    db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
+    if db_pool:
+        print("Database connection pool created successfully")
+except Exception as e:
+    print(f"Error creating connection pool: {e}")
+    db_pool = None
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-      "https://hypermedia-applications-rho.vercel.app",  # Frontend su Vercel
+      "https://hypermedia-applications-rho.vercel.app",
       "http://localhost:5173",
       "http://localhost:8080",
       "http://localhost:3000",
@@ -25,53 +33,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def get_db_connection():
+    if db_pool:
+        return db_pool.getconn()
+    return psycopg2.connect(DATABASE_URL)
+
+def release_db_connection(conn):
+    if db_pool:
+        db_pool.putconn(conn)
+    else:
+        conn.close()
+
+def execute_query(query, params=None, fetch_one=False):
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            if fetch_one:
+                return cur.fetchone()
+            return cur.fetchall()
+    finally:
+        release_db_connection(conn)
+
 @app.get("/messaggi")
 async def get_messaggi():
-    # Seleziono *tutte* le colonne di tutti i record
-    resp = supabase.table("messaggi")\
-                   .select("*")\
-                   .order("id", desc=False)\
-    .execute()
-    return {"messaggi": resp.data}
+    data = execute_query("SELECT * FROM messaggi ORDER BY id ASC")
+    return {"messaggi": data}
 
 # ------------------- TEACHERS ------------------- #
 
-# Get all teachers information
 @app.get("/teachers")
 async def get_teachers(lang: str = "en"):
     try:
-        base_resp = supabase.table("teacher_base").select("*").execute()
-        base_teachers = base_resp.data if base_resp.data else []
+        base_teachers = execute_query("SELECT * FROM teacher_base")
         if not base_teachers:
             return {"teachers": []}
+            
         teachers = []
         missing_translations = []
         for base in base_teachers:
-            # Fix column names - convert "Name" and "Surname" to lowercase
             if "Name" in base:
-                base["name"] = base["Name"]
-                del base["Name"]
+                base["name"] = base.pop("Name")
             if "Surname" in base:
-                base["surname"] = base["Surname"]
-                del base["Surname"]
+                base["surname"] = base.pop("Surname")
                 
-            trans_resp = supabase.table("teacher_translations")\
-                .select("*")\
-                .eq("id", base["id"])\
-                .eq("language_code", lang)\
-                .execute()
-            trans_data = trans_resp.data[0] if trans_resp.data else None
+            trans_data = execute_query("SELECT * FROM teacher_translations WHERE id = %s AND language_code = %s", (base["id"], lang), fetch_one=True)
             if not trans_data:
                 missing_translations.append(base["id"])
                 continue
+            
             teacher = {**base, **trans_data}
-            if "teacher_id" in teacher:
-                del teacher["teacher_id"]
-            if "language_code" in teacher:
-                del teacher["language_code"]
-            if "NON_USARE" in teacher:
-                del teacher["NON_USARE"]
+            teacher.pop("teacher_id", None)
+            teacher.pop("language_code", None)
+            teacher.pop("NON_USARE", None)
             teachers.append(teacher)
+            
         if missing_translations:
             return {"error": f"Missing translations for teachers: {missing_translations}", "teachers": []}
         return {"teachers": teachers}
@@ -79,65 +95,40 @@ async def get_teachers(lang: str = "en"):
         print(f"Error fetching teachers: {str(e)}")
         return {"teachers": [], "error": str(e)}
 
-# Get a specific teacher by ID
 @app.get("/teacher/{teacher_id}")
 async def get_teacher(teacher_id: str, lang: str = "en"):
     try:
-        base_resp = supabase.table("teacher_base").select("*").eq("id", teacher_id).execute()
+        base_teacher = execute_query("SELECT * FROM teacher_base WHERE id = %s", (teacher_id,), fetch_one=True)
         
-        if not base_resp.data or len(base_resp.data) == 0:
-            # Try to get the teacher_id from teacher_translations
-            trans_lookup = supabase.table("teacher_translations").select("id").eq("id", teacher_id).execute()
-            
-            if trans_lookup.data and len(trans_lookup.data) > 0:
-                # Get the actual teacher_id from the translation record
-                actual_teacher_id = trans_lookup.data[0]["id"]
-                # Now fetch the base teacher with this ID
-                base_resp = supabase.table("teacher_base").select("*").eq("id", actual_teacher_id).execute()
-                if not base_resp.data or len(base_resp.data) == 0:
+        if not base_teacher:
+            trans_lookup = execute_query("SELECT id FROM teacher_translations WHERE id = %s", (teacher_id,), fetch_one=True)
+            if trans_lookup:
+                actual_teacher_id = trans_lookup["id"]
+                base_teacher = execute_query("SELECT * FROM teacher_base WHERE id = %s", (actual_teacher_id,), fetch_one=True)
+                if not base_teacher:
                     return {"teacher": None}
             else:
                 return {"teacher": None}
-            
-        base_teacher = base_resp.data[0]
+                
         actual_teacher_id = base_teacher["id"]
         
         if "Name" in base_teacher:
-            base_teacher["name"] = base_teacher["Name"]
-            del base_teacher["Name"]
+            base_teacher["name"] = base_teacher.pop("Name")
         if "Surname" in base_teacher:
-            base_teacher["surname"] = base_teacher["Surname"]
-            del base_teacher["Surname"]
-        
-        # Fetch translation for the requested language
-        trans_resp = supabase.table("teacher_translations")\
-            .select("*")\
-            .eq("id", actual_teacher_id)\
-            .eq("language_code", lang)\
-            .execute()
+            base_teacher["surname"] = base_teacher.pop("Surname")
             
-        # If translation not found in requested language, try English as fallback
-        if not trans_resp.data or len(trans_resp.data) == 0:
-            if lang != "en":
-                trans_resp = supabase.table("teacher_translations")\
-                    .select("*")\
-                    .eq("id", actual_teacher_id)\
-                    .eq("language_code", "en")\
-                    .execute()
+        trans_data = execute_query("SELECT * FROM teacher_translations WHERE id = %s AND language_code = %s", (actual_teacher_id, lang), fetch_one=True)
         
-        if not trans_resp.data or len(trans_resp.data) == 0:
+        if not trans_data and lang != "en":
+            trans_data = execute_query("SELECT * FROM teacher_translations WHERE id = %s AND language_code = 'en'", (actual_teacher_id,), fetch_one=True)
+            
+        if not trans_data:
             return {"teacher": base_teacher}
             
-        trans_data = trans_resp.data[0]
         teacher = {**base_teacher, **trans_data}
-        
-        # Remove duplicate fields
-        if "teacher_id" in teacher:
-            del teacher["teacher_id"]
-        if "language_code" in teacher:
-            del teacher["language_code"]
-        if "NON_USARE" in teacher:
-            del teacher["NON_USARE"]
+        teacher.pop("teacher_id", None)
+        teacher.pop("language_code", None)
+        teacher.pop("NON_USARE", None)
             
         return {"teacher": teacher}
     except Exception as e:
@@ -147,182 +138,83 @@ async def get_teacher(teacher_id: str, lang: str = "en"):
 @app.get("/teacher/activity/{activity_id}")
 async def get_teacher_by_activityid(activity_id: str, lang: str = "en"):
     try:
-        print(f"DEBUG: get_teacher_by_activityid called with activity_id={activity_id}, lang={lang}")
+        activity_data = execute_query("SELECT teacher_id FROM activity_base WHERE id = %s", (activity_id,), fetch_one=True)
         
-        # First get the teacher_id from activity_base
-        activity_resp = supabase.table("activity_base")\
-            .select("teacher_id")\
-            .eq("id", activity_id)\
-            .execute()
-            
-        print(f"DEBUG: activity_base query response: {activity_resp.data}")
-        
-        if not activity_resp.data or len(activity_resp.data) == 0:
-            print(f"Activity with ID {activity_id} not found in activity_base, trying to find in activity_translations")
-            
-            # Cerchiamo activity_translations.id = activity_id per ottenere activity_translations.activity_id
-            translations_resp = supabase.table("activity_translations")\
-                .select("activity_id")\
-                .eq("id", activity_id)\
-                .execute()
+        if not activity_data:
+            translations_lookup = execute_query("SELECT activity_id FROM activity_translations WHERE id = %s", (activity_id,), fetch_one=True)
+            if translations_lookup:
+                corrected_activity_id = translations_lookup["activity_id"]
+                activity_data = execute_query("SELECT teacher_id FROM activity_base WHERE id = %s", (corrected_activity_id,), fetch_one=True)
                 
-            print(f"DEBUG: activity_translations query response: {translations_resp.data}")
-                
-            if translations_resp.data and len(translations_resp.data) > 0:
-                corrected_activity_id = translations_resp.data[0]["activity_id"]
-                print(f"DEBUG: Found corrected activity_id={corrected_activity_id} for translations.id={activity_id}")
-                
-                activity_resp = supabase.table("activity_base")\
-                    .select("teacher_id")\
-                    .eq("id", corrected_activity_id)\
-                    .execute()
-                    
-                print(f"DEBUG: activity_base query response with corrected ID: {activity_resp.data}")
-        
-        if not activity_resp.data or len(activity_resp.data) == 0:
-            print(f"Activity not found for ID {activity_id} (after correction attempt)")
+        if not activity_data:
             return {"teacher": None}
             
-        teacher_id = activity_resp.data[0]["teacher_id"]
-        print(f"DEBUG: Found teacher_id={teacher_id} for activity_id={activity_id}")
+        teacher_id = activity_data["teacher_id"]
         
-        # Get the teacher base data
-        teacher_resp = supabase.table("teacher_base")\
-            .select("*")\
-            .eq("id", teacher_id)\
-            .execute()
-            
-        print(f"DEBUG: teacher_base query response: {teacher_resp.data}")
-            
-        if not teacher_resp.data or len(teacher_resp.data) == 0:
-            print(f"Teacher with ID {teacher_id} not found")
+        teacher_base = execute_query("SELECT * FROM teacher_base WHERE id = %s", (teacher_id,), fetch_one=True)
+        if not teacher_base:
             return {"teacher": None}
             
-        teacher_base = teacher_resp.data[0]
-        print(f"DEBUG: Raw teacher base data: {teacher_base}")
-        
-        # Fix column names - convert "Name" and "Surname" to lowercase
         if "Name" in teacher_base:
-            teacher_base["name"] = teacher_base["Name"]
-            del teacher_base["Name"]
+            teacher_base["name"] = teacher_base.pop("Name")
         if "Surname" in teacher_base:
-            teacher_base["surname"] = teacher_base["Surname"]
-            del teacher_base["Surname"]
-        
-        print(f"DEBUG: After name/surname fix: {teacher_base}")
-        
-        # Get teacher translations
-        trans_resp = supabase.table("teacher_translations")\
-            .select("*")\
-            .eq("id", teacher_id)\
-            .eq("language_code", lang)\
-            .execute()
+            teacher_base["surname"] = teacher_base.pop("Surname")
             
-        print(f"DEBUG: teacher_translations query response: {trans_resp.data}")
-            
-        # If translation not found in the requested language, try English
-        if not trans_resp.data or len(trans_resp.data) == 0:
-            if lang != "en":
-                trans_resp = supabase.table("teacher_translations")\
-                    .select("*")\
-                    .eq("id", teacher_id)\
-                    .eq("language_code", "en")\
-                    .execute()
-                print(f"DEBUG: fallback to EN - teacher_translations query response: {trans_resp.data}")
+        trans_data = execute_query("SELECT * FROM teacher_translations WHERE id = %s AND language_code = %s", (teacher_id, lang), fetch_one=True)
         
+        if not trans_data and lang != "en":
+            trans_data = execute_query("SELECT * FROM teacher_translations WHERE id = %s AND language_code = 'en'", (teacher_id,), fetch_one=True)
+            
         teacher = {**teacher_base}
-        if trans_resp.data and len(trans_resp.data) > 0:
-            teacher.update(trans_resp.data[0])
+        if trans_data:
+            teacher.update(trans_data)
             
-        if "language_code" in teacher:
-            del teacher["language_code"]
-        if "NON_USARE" in teacher:
-            del teacher["NON_USARE"]
+        teacher.pop("language_code", None)
+        teacher.pop("NON_USARE", None)
             
-        print(f"DEBUG: Final teacher data to return: {teacher}")
         return {"teacher": teacher}
     except Exception as e:
         print(f"Error fetching teacher for activity {activity_id}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return {"teacher": None}
 
-# Get all activities for a specific teacher (many-to-many via teaches)
 @app.get("/teacher/{teacher_id}/activities")
 async def get_teacher_activities(teacher_id: str, lang: str = "en"):
     try:
-        # First check if this is a teacher_base ID
         actual_teacher_id = teacher_id
+        base_check = execute_query("SELECT id FROM teacher_base WHERE id = %s", (teacher_id,), fetch_one=True)
         
-        base_check = supabase.table("teacher_base").select("id").eq("id", teacher_id).execute()
-        if not base_check.data or len(base_check.data) == 0:
-            # Try to get the teacher_id from teacher_translations
-            trans_lookup = supabase.table("teacher_translations").select("teacher_id").eq("id", teacher_id).execute()
-            
-            if trans_lookup.data and len(trans_lookup.data) > 0:
-                # Get the actual teacher_id from the translation record
-                actual_teacher_id = trans_lookup.data[0]["teacher_id"]
+        if not base_check:
+            trans_lookup = execute_query("SELECT teacher_id FROM teacher_translations WHERE id = %s", (teacher_id,), fetch_one=True)
+            if trans_lookup:
+                actual_teacher_id = trans_lookup["teacher_id"]
             else:
                 return {"activities": []}
-    
-        # Get all activity IDs from the teaches table for this teacher
-        teaches_resp = supabase.table("teaches") \
-            .select("idactivity") \
-            .eq("idteacher", actual_teacher_id) \
-            .execute()
+                
+        teaches_data = execute_query("SELECT idactivity FROM teaches WHERE idteacher = %s", (actual_teacher_id,))
+        activity_ids = [row["idactivity"] for row in teaches_data] if teaches_data else []
         
-        activity_ids = [row["idactivity"] for row in teaches_resp.data] if teaches_resp.data else []
         if not activity_ids:
             return {"activities": []}
-        
-        # Get all activities with translations
+            
         activities = []
         for base_activity_id in activity_ids:
-            # Get base data from activity_base
-            base_resp = supabase.table("activity_base") \
-                .select("*") \
-                .eq("id", base_activity_id) \
-                .execute()
-                
-            if not base_resp.data or len(base_resp.data) == 0:
-                print(f"Warning: Activity base record not found for ID {base_activity_id}")
+            base_activity = execute_query("SELECT * FROM activity_base WHERE id = %s", (base_activity_id,), fetch_one=True)
+            if not base_activity:
                 continue
                 
-            base_activity = base_resp.data[0]
+            trans_data = execute_query("SELECT * FROM activity_translations WHERE activity_id = %s AND language_code = %s", (base_activity_id, lang), fetch_one=True)
             
-            # Get translation for the requested language
-            trans_resp = supabase.table("activity_translations") \
-                .select("*") \
-                .eq("activity_id", base_activity_id) \
-                .eq("language_code", lang) \
-                .execute()
+            if not trans_data and lang != "en":
+                trans_data = execute_query("SELECT * FROM activity_translations WHERE activity_id = %s AND language_code = 'en'", (base_activity_id,), fetch_one=True)
                 
-            # If translation doesn't exist in requested language, fallback to English
-            if not trans_resp.data or len(trans_resp.data) == 0:
-                if lang != "en":
-                    trans_resp = supabase.table("activity_translations") \
-                        .select("*") \
-                        .eq("activity_id", base_activity_id) \
-                        .eq("language_code", "en") \
-                        .execute()
-            
-            # Merge base data with translations if available
-            if trans_resp.data and len(trans_resp.data) > 0:
-                trans_data = trans_resp.data[0]
-                # Create a merged activity object
+            if trans_data:
                 activity = {**base_activity, **trans_data}
-                
-                # Remove duplicate keys from translation table
-                if "activity_id" in activity:
-                    del activity["activity_id"]
-                if "language_code" in activity:
-                    del activity["language_code"]
-                
+                activity.pop("activity_id", None)
+                activity.pop("language_code", None)
                 activities.append(activity)
             else:
-                # No translation found, use base data only
                 activities.append(base_activity)
-        
+                
         return {"activities": activities}
     except Exception as e:
         print(f"Error fetching activities for teacher {teacher_id}: {str(e)}")
@@ -330,124 +222,80 @@ async def get_teacher_activities(teacher_id: str, lang: str = "en"):
 
 # ------------------- ACTIVITIES ------------------- #
 
-# Get all activities information with translations for a specific language
 @app.get("/activities")
 async def get_activities(lang: str = "en"):
-    """
-    Restituisce tutte le attività con le traduzioni nella lingua richiesta.
-    Se una traduzione non esiste per una attività, ritorna errore.
-    """
     try:
-        base_resp = supabase.table("activity_base").select("*").execute()
-        base_activities = base_resp.data if base_resp.data else []
-
+        base_activities = execute_query("SELECT * FROM activity_base")
         if not base_activities:
             return {"activities": []}
-
+            
         activities = []
         missing_translations = []
         for base in base_activities:
-            trans_resp = supabase.table("activity_translations")\
-                .select("*")\
-                .eq("activity_id", base["id"])\
-                .eq("language_code", lang)\
-                .execute()
-            trans_data = trans_resp.data[0] if trans_resp.data else None
-
+            trans_data = execute_query("SELECT * FROM activity_translations WHERE activity_id = %s AND language_code = %s", (base["id"], lang), fetch_one=True)
+            
             if not trans_data:
                 missing_translations.append(base["id"])
                 continue
-
+                
             activity = {**base, **trans_data}
-            if "activity_id" in activity:
-                del activity["activity_id"]
-            if "language_code" in activity:
-                del activity["language_code"]
-
+            activity.pop("activity_id", None)
+            activity.pop("language_code", None)
             activities.append(activity)
-
+            
         if missing_translations:
             return {"error": f"Missing translations for activities: {missing_translations}", "activities": []}
-
+            
         return {"activities": activities}
     except Exception as e:
         print(f"Error fetching activities: {str(e)}")
         return {"activities": [], "error": str(e)}
 
-# Get a specific activity by ID
 @app.get("/activity/{activity_id}")
 async def get_activity(activity_id: str, lang: str = "en"):
     try:
-        base_resp = supabase.table("activity_base").select("*").eq("id", activity_id).execute()
+        base_activity = execute_query("SELECT * FROM activity_base WHERE id = %s", (activity_id,), fetch_one=True)
         
-        if not base_resp.data or len(base_resp.data) == 0:
-            # Try to get the activity_id from activity_translations
-            trans_lookup = supabase.table("activity_translations").select("activity_id").eq("id", activity_id).execute()
-            
-            if trans_lookup.data and len(trans_lookup.data) > 0:
-                # Get the actual activity_id from the translation record
-                actual_activity_id = trans_lookup.data[0]["activity_id"]
-                base_resp = supabase.table("activity_base").select("*").eq("id", actual_activity_id).execute()
-                if not base_resp.data or len(base_resp.data) == 0:
+        if not base_activity:
+            trans_lookup = execute_query("SELECT activity_id FROM activity_translations WHERE id = %s", (activity_id,), fetch_one=True)
+            if trans_lookup:
+                actual_activity_id = trans_lookup["activity_id"]
+                base_activity = execute_query("SELECT * FROM activity_base WHERE id = %s", (actual_activity_id,), fetch_one=True)
+                if not base_activity:
                     return {"activity": None}
             else:
                 return {"activity": None}
-            
-        base_activity = base_resp.data[0]
+                
         actual_activity_id = base_activity["id"]
         
-        # Fetch translation for the requested language
-        trans_resp = supabase.table("activity_translations")\
-            .select("*")\
-            .eq("activity_id", actual_activity_id)\
-            .eq("language_code", lang)\
-            .execute()
-            
-        # If translation not found in requested language, try English as fallback
-        if not trans_resp.data or len(trans_resp.data) == 0:
-            if lang != "en":
-                trans_resp = supabase.table("activity_translations")\
-                    .select("*")\
-                    .eq("activity_id", actual_activity_id)\
-                    .eq("language_code", "en")\
-                    .execute()
+        trans_data = execute_query("SELECT * FROM activity_translations WHERE activity_id = %s AND language_code = %s", (actual_activity_id, lang), fetch_one=True)
         
-        if not trans_resp.data or len(trans_resp.data) == 0:
-            # If still no translation, return just the base data
+        if not trans_data and lang != "en":
+            trans_data = execute_query("SELECT * FROM activity_translations WHERE activity_id = %s AND language_code = 'en'", (actual_activity_id,), fetch_one=True)
+            
+        if not trans_data:
             return {"activity": base_activity}
             
-        # Merge base and translation data
-        trans_data = trans_resp.data[0]
         activity = {**base_activity, **trans_data}
-        
-        if "activity_id" in activity:
-            del activity["activity_id"]
-        if "language_code" in activity:
-            del activity["language_code"]
+        activity.pop("activity_id", None)
+        activity.pop("language_code", None)
             
         return {"activity": activity}
     except Exception as e:
         print(f"Error fetching activity {activity_id}: {str(e)}")
         return {"activity": None, "error": str(e)}
 
-# Get a specific activity by name
 @app.get("/activity_by_name")
 async def get_activity_by_name(name: str):
     # First try exact match
-    resp = supabase.table("activity")\
-                   .select("*")\
-                   .eq("title", name)\
-                   .execute()
-    
-    if len(resp.data) == 0:
-        resp = supabase.table("activity")\
-                       .select("*")\
-                       .ilike("title", f"%{name}%")\
-                       .execute()
-    
-    if len(resp.data) > 0:
-        return {"activity": resp.data[0], "activity_id": resp.data[0]["id"]}
-    
+    exact_match = execute_query("SELECT * FROM activity WHERE title = %s", (name,), fetch_one=True)
+    if not exact_match:
+        like_match = execute_query("SELECT * FROM activity WHERE title ILIKE %s", (f"%{name}%",), fetch_one=True)
+        if like_match:
+            return {"activity": like_match, "activity_id": like_match["id"]}
+    else:
+        return {"activity": exact_match, "activity_id": exact_match["id"]}
+        
     activity_mappings = {
         "mindful pottery": "Mindful Pottery",
         "mindful potter": "Mindful Pottery",
@@ -464,34 +312,22 @@ async def get_activity_by_name(name: str):
     normalized_name = name.lower().strip()
     if normalized_name in activity_mappings:
         mapped_name = activity_mappings[normalized_name]
-        resp = supabase.table("activity")\
-                       .select("*")\
-                       .eq("title", mapped_name)\
-                       .execute()
-        
-        if len(resp.data) > 0:
-            return {"activity": resp.data[0], "activity_id": resp.data[0]["id"]}
-    
+        mapped_match = execute_query("SELECT * FROM activity WHERE title = %s", (mapped_name,), fetch_one=True)
+        if mapped_match:
+            return {"activity": mapped_match, "activity_id": mapped_match["id"]}
+            
     return {"activity": None, "activity_id": None}
 
-# Get activity ID from name
 @app.get("/activity_id_from_name")
 async def get_activity_id_from_name(name: str):
-    # First try exact match
-    resp = supabase.table("activity")\
-                   .select("id, title")\
-                   .eq("title", name)\
-                   .execute()
-    
-    if len(resp.data) == 0:
-        resp = supabase.table("activity")\
-                       .select("id, title")\
-                       .ilike("title", f"%{name}%")\
-                       .execute()
-    
-    if len(resp.data) > 0:
-        return {"id": resp.data[0]["id"], "title": resp.data[0]["title"]}
-    
+    exact_match = execute_query("SELECT id, title FROM activity WHERE title = %s", (name,), fetch_one=True)
+    if not exact_match:
+        like_match = execute_query("SELECT id, title FROM activity WHERE title ILIKE %s", (f"%{name}%",), fetch_one=True)
+        if like_match:
+            return {"id": like_match["id"], "title": like_match["title"]}
+    else:
+        return {"id": exact_match["id"], "title": exact_match["title"]}
+        
     activity_mappings = {
         "mindful pottery": "Mindful Pottery",
         "mindful potter": "Mindful Pottery",
@@ -508,52 +344,40 @@ async def get_activity_id_from_name(name: str):
     normalized_name = name.lower().strip()
     if normalized_name in activity_mappings:
         mapped_name = activity_mappings[normalized_name]
-        resp = supabase.table("activity")\
-                       .select("id, title")\
-                       .eq("title", mapped_name)\
-                       .execute()
-        
-        if len(resp.data) > 0:
-            return {"id": resp.data[0]["id"], "title": resp.data[0]["title"]}
-    
+        mapped_match = execute_query("SELECT id, title FROM activity WHERE title = %s", (mapped_name,), fetch_one=True)
+        if mapped_match:
+            return {"id": mapped_match["id"], "title": mapped_match["title"]}
+            
     return {"id": None, "title": None}
 
 # ------------------- ROOMS ------------------- #
 
-# Get all rooms information
 @app.get("/rooms")
 async def get_rooms(lang: str = "en"):
     try:
-        base_resp = supabase.table("room_base").select("*").execute()
-        base_rooms = base_resp.data if base_resp.data else []
+        base_rooms = execute_query("SELECT * FROM room_base")
         if not base_rooms:
             return {"rooms": []}
+            
         rooms = []
         missing_translations = []
         for base in base_rooms:
             room_id = base["id"]
+            trans_data = execute_query("SELECT * FROM room_translations WHERE room_id = %s AND language_code = %s", (room_id, lang), fetch_one=True)
             
-            trans_resp = supabase.table("room_translations")\
-                .select("*")\
-                .eq("room_id", room_id)\
-                .eq("language_code", lang)\
-                .execute()
-            trans_data = trans_resp.data[0] if trans_resp.data else None
             if not trans_data:
                 missing_translations.append(room_id)
                 continue
-            room = {**base, **trans_data}
-            if "room_id" in room:
-                del room["room_id"]
-            if "language_code" in room:
-                del room["language_code"]
                 
+            room = {**base, **trans_data}
+            room.pop("room_id", None)
+            room.pop("language_code", None)
+            
             features = room.get("features", "")
             features_list = []
             
             if isinstance(features, str):
                 features = features.strip()
-                
                 if "-" in features:
                     features_list = [f.strip() for f in features.split("-") if f.strip()]
                 elif "," in features:
@@ -563,46 +387,31 @@ async def get_rooms(lang: str = "en"):
             elif isinstance(features, list):
                 features_list = features
                 
-            # Aggiorna le features nel room
             room["features"] = features_list
             
-            activities_resp = supabase.table("activity_base")\
-                                     .select("id, type")\
-                                     .eq("roomid", room_id)\
-                                     .execute()
-            
+            activities_base = execute_query("SELECT id, type FROM activity_base WHERE roomid = %s", (room_id,))
             room_activities = []
             
-            if activities_resp.data and len(activities_resp.data) > 0:
-                for activity_base in activities_resp.data:
+            if activities_base:
+                for activity_base in activities_base:
                     activity_id = activity_base["id"]
+                    trans_act = execute_query("SELECT title, short_description FROM activity_translations WHERE activity_id = %s AND language_code = %s", (activity_id, lang), fetch_one=True)
                     
-                    trans_resp = supabase.table("activity_translations")\
-                                        .select("title, short_description")\
-                                        .eq("activity_id", activity_id)\
-                                        .eq("language_code", lang)\
-                                        .execute()
-                    
-                    if not trans_resp.data or len(trans_resp.data) == 0:
-                        if lang != "en":
-                            trans_resp = supabase.table("activity_translations")\
-                                              .select("title, short_description")\
-                                              .eq("activity_id", activity_id)\
-                                              .eq("language_code", "en")\
-                                              .execute()
-                    
-                    if trans_resp.data and len(trans_resp.data) > 0:
+                    if not trans_act and lang != "en":
+                        trans_act = execute_query("SELECT title, short_description FROM activity_translations WHERE activity_id = %s AND language_code = 'en'", (activity_id,), fetch_one=True)
+                        
+                    if trans_act:
                         activity_info = {
                             "id": activity_id,
-                            "title": trans_resp.data[0].get("title", ""),
+                            "title": trans_act.get("title", ""),
                             "type": activity_base.get("type", ""),
-                            "description": trans_resp.data[0].get("short_description", "")
+                            "description": trans_act.get("short_description", "")
                         }
                         room_activities.append(activity_info)
-            
+                        
             room["activities"] = room_activities
-            
             rooms.append(room)
+            
         if missing_translations:
             return {"error": f"Missing translations for rooms: {missing_translations}", "rooms": []}
         return {"rooms": rooms}
@@ -610,47 +419,27 @@ async def get_rooms(lang: str = "en"):
         print(f"Error fetching rooms: {str(e)}")
         return {"rooms": [], "error": str(e)}
 
-# Get a specific room by ID
 @app.get("/room/{room_id}")
 async def get_room(room_id: str, lang: str = "en"):
     try:
-        # Otteniamo prima i dati di base della stanza
-        base_resp = supabase.table("room_base").select("*").eq("id", room_id).execute()
-        
-        if not base_resp.data or len(base_resp.data) == 0:
+        base_room = execute_query("SELECT * FROM room_base WHERE id = %s", (room_id,), fetch_one=True)
+        if not base_room:
             return {"room": None, "error": f"Room with ID {room_id} not found"}
             
-        base_room = base_resp.data[0]
-        
-        # Otteniamo la traduzione nella lingua richiesta
-        trans_resp = supabase.table("room_translations")\
-            .select("*")\
-            .eq("room_id", room_id)\
-            .eq("language_code", lang)\
-            .execute()
+        trans_data = execute_query("SELECT * FROM room_translations WHERE room_id = %s AND language_code = %s", (room_id, lang), fetch_one=True)
+        if not trans_data and lang != "en":
+            trans_data = execute_query("SELECT * FROM room_translations WHERE room_id = %s AND language_code = 'en'", (room_id,), fetch_one=True)
             
-        if not trans_resp.data or len(trans_resp.data) == 0:
-            if lang != "en":
-                trans_resp = supabase.table("room_translations")\
-                    .select("*")\
-                    .eq("room_id", room_id)\
-                    .eq("language_code", "en")\
-                    .execute()
-                    
         room_data = {**base_room}
-        if trans_resp.data and len(trans_resp.data) > 0:
-            room_data.update(trans_resp.data[0])
-            if "room_id" in room_data:
-                del room_data["room_id"]
-            if "language_code" in room_data:
-                del room_data["language_code"]
-        
+        if trans_data:
+            room_data.update(trans_data)
+            room_data.pop("room_id", None)
+            room_data.pop("language_code", None)
+            
         features = room_data.get("features", "")
         features_list = []
-        
         if isinstance(features, str):
             features = features.strip()
-            
             if "-" in features:
                 features_list = [f.strip() for f in features.split("-") if f.strip()]
             elif "," in features:
@@ -659,50 +448,33 @@ async def get_room(room_id: str, lang: str = "en"):
                 features_list = [features]
         elif isinstance(features, list):
             features_list = features
-        
-        # Recupera le attività associate a questa stanza
-        activities_resp = supabase.table("activity_base")\
-                                .select("id, type")\
-                                .eq("roomid", room_id)\
-                                .execute()
             
+        activities_base = execute_query("SELECT id, type FROM activity_base WHERE roomid = %s", (room_id,))
         room_activities = []
         
-        # Se ci sono attività associate a questa stanza
-        if activities_resp.data and len(activities_resp.data) > 0:
-            for activity_base in activities_resp.data:
+        if activities_base:
+            for activity_base in activities_base:
                 activity_id = activity_base["id"]
+                trans_act = execute_query("SELECT title, short_description FROM activity_translations WHERE activity_id = %s AND language_code = %s", (activity_id, lang), fetch_one=True)
                 
-                # Recupera i dettagli tradotti dell'attività nella stessa lingua
-                trans_resp = supabase.table("activity_translations")\
-                                    .select("title, short_description")\
-                                    .eq("activity_id", activity_id)\
-                                    .eq("language_code", lang)\
-                                    .execute()
-                
-                if not trans_resp.data or len(trans_resp.data) == 0:
-                    if lang != "en":
-                        trans_resp = supabase.table("activity_translations")\
-                                        .select("title, short_description")\
-                                        .eq("activity_id", activity_id)\
-                                        .eq("language_code", "en")\
-                                        .execute()
-                
-                if trans_resp.data and len(trans_resp.data) > 0:
+                if not trans_act and lang != "en":
+                    trans_act = execute_query("SELECT title, short_description FROM activity_translations WHERE activity_id = %s AND language_code = 'en'", (activity_id,), fetch_one=True)
+                    
+                if trans_act:
                     activity_info = {
                         "id": activity_id,
-                        "title": trans_resp.data[0].get("title", ""),
+                        "title": trans_act.get("title", ""),
                         "type": activity_base.get("type", ""),
-                        "description": trans_resp.data[0].get("short_description", "")
+                        "description": trans_act.get("short_description", "")
                     }
                     room_activities.append(activity_info)
-        
+                    
         legacy_activities = []
         if room_data.get("activity1"):
             legacy_activities.append(room_data.get("activity1"))
         if room_data.get("activity2"):
             legacy_activities.append(room_data.get("activity2"))
-        
+            
         if not legacy_activities and room_data.get("activities"):
             activities_text = room_data.get("activities")
             if isinstance(activities_text, str):
@@ -714,8 +486,7 @@ async def get_room(room_id: str, lang: str = "en"):
                     legacy_activities = [activities_text]
             elif isinstance(activities_text, list):
                 legacy_activities = activities_text
-        
-        # Format the processed room data
+                
         processed_room = {
             "id": room_data.get("id"),
             "title": room_data.get("title", ""),
@@ -734,16 +505,12 @@ async def get_room(room_id: str, lang: str = "en"):
 
 # ------------------- AREAS ------------------- #
 
-# Get all areas information
 @app.get("/areas")
 async def get_areas():
-    resp = supabase.table("areas")\
-                   .select("*")\
-                   .execute()
-    
+    areas_base = execute_query("SELECT * FROM areas")
     areas_data = []
-    for area in resp.data:
-        # Create a complete URL if it's partial
+    
+    for area in (areas_base or []):
         image_url = area.get("image", "")
         if image_url and "dcrgvkmnnavjahkprnkem.supabase" in image_url:
             if not "/storage/v1/object/public/yoga/" in image_url:
@@ -754,25 +521,15 @@ async def get_areas():
                     image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/play_area.jpg"
                 elif area_title == "spa":
                     image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/spa.jpg"
-        
-        # Update the area with the complete image URL
         area["image"] = image_url
         areas_data.append(area)
-    
+        
     return {"areas": areas_data}
 
-# Get a specific area by ID
 @app.get("/area/{area_id}")
 async def get_area(area_id: str):
-    resp = supabase.table("areas")\
-                   .select("*")\
-                   .eq("id", area_id)\
-                   .execute()
-    
-    if len(resp.data) > 0:
-        area = resp.data[0]
-        
-        # Create a complete URL if it's partial
+    area = execute_query("SELECT * FROM areas WHERE id = %s", (area_id,), fetch_one=True)
+    if area:
         image_url = area.get("image", "")
         if image_url and "dcrgvkmnnavjahkprnkem.supabase" in image_url:
             if not "/storage/v1/object/public/yoga/" in image_url:
@@ -783,9 +540,7 @@ async def get_area(area_id: str):
                     image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/play_area.jpg"
                 elif area_title == "spa":
                     image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/spa.jpg"
-                
                 area["image"] = image_url
-        
         return {"area": area}
     return {"area": None}
 
@@ -794,74 +549,42 @@ async def get_area(area_id: str):
 @app.get("/reviews")
 async def get_reviews(lang: str = "en"):
     try:
-        base_resp = supabase.table("reviews_base").select("*").order("date", desc=True).execute()
-        base_reviews = base_resp.data if base_resp.data else []
+        base_reviews = execute_query("SELECT * FROM reviews_base ORDER BY date DESC")
         if not base_reviews:
             return {"reviews": []}
             
         reviews = []
-        
         for base in base_reviews:
-            trans_resp = supabase.table("review_translations")\
-                .select("*")\
-                .eq("review_id", base["id"])\
-                .eq("language_code", lang)\
-                .execute()
-            trans_data = trans_resp.data[0] if trans_resp.data else None
+            trans_data = execute_query("SELECT * FROM review_translations WHERE review_id = %s AND language_code = %s", (base["id"], lang), fetch_one=True)
             
             if not trans_data and lang != "en":
-                trans_resp = supabase.table("review_translations")\
-                    .select("*")\
-                    .eq("review_id", base["id"])\
-                    .eq("language_code", "en")\
-                    .execute()
-                trans_data = trans_resp.data[0] if trans_resp.data else None
-            
+                trans_data = execute_query("SELECT * FROM review_translations WHERE review_id = %s AND language_code = 'en'", (base["id"],), fetch_one=True)
+                
             review = {**base}
-            
             if trans_data:
                 review.update(trans_data)
-                if "review_id" in review:
-                    del review["review_id"]
-                if "language_code" in review:
-                    del review["language_code"]
+                review.pop("review_id", None)
+                review.pop("language_code", None)
                 
-            participant_resp = supabase.table("participant")\
-                .select("*")\
-                .eq("id", base["idparticipant"])\
-                .execute()
-            participant_data = participant_resp.data[0] if participant_resp.data else {}
-            
-            activity_resp = supabase.table("activity_base")\
-                .select("id")\
-                .eq("id", base["idactivity"])\
-                .execute()
+            participant_data = execute_query("SELECT * FROM participant WHERE id = %s", (base["idparticipant"],), fetch_one=True)
+            if not participant_data:
+                participant_data = {}
                 
+            activity_base = execute_query("SELECT id FROM activity_base WHERE id = %s", (base["idactivity"],), fetch_one=True)
             activity_id = None
             activity_title = None
-            if activity_resp.data and len(activity_resp.data) > 0:
-                activity_id = activity_resp.data[0].get("id")
+            
+            if activity_base:
+                activity_id = activity_base.get("id")
+                activity_trans = execute_query("SELECT title FROM activity_translations WHERE activity_id = %s AND language_code = %s", (activity_id, lang), fetch_one=True)
                 
-                # Recupera il titolo dell'attività nella lingua specifica
-                activity_trans_resp = supabase.table("activity_translations")\
-                    .select("title")\
-                    .eq("activity_id", activity_id)\
-                    .eq("language_code", lang)\
-                    .execute()
+                if not activity_trans:
+                    activity_trans = execute_query("SELECT title FROM activity_translations WHERE activity_id = %s AND language_code = 'en'", (activity_id,), fetch_one=True)
                     
-                if activity_trans_resp.data and len(activity_trans_resp.data) > 0:
-                    activity_title = activity_trans_resp.data[0].get("title")
-                else:
-                    activity_trans_resp = supabase.table("activity_translations")\
-                        .select("title")\
-                        .eq("activity_id", activity_id)\
-                        .eq("language_code", "en")\
-                        .execute()
-                    if activity_trans_resp.data and len(activity_trans_resp.data) > 0:
-                        activity_title = activity_trans_resp.data[0].get("title")
-            
+                if activity_trans:
+                    activity_title = activity_trans.get("title")
+                    
             review["participant"] = participant_data
-            
             review["activity"] = {
                 "id": activity_id,
                 "title": activity_title
@@ -869,7 +592,7 @@ async def get_reviews(lang: str = "en"):
             
             if "review" not in review:
                 review["review"] = "Great experience at Serendipity Yoga!"
-            
+                
             reviews.append(review)
             
         return {"reviews": reviews}
