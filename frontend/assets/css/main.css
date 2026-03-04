@@ -1,0 +1,88 @@
+@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;700&display=swap');
+@import './theme.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply transition-colors duration-300;
+  }
+  
+  body {
+    font-family: 'Raleway', sans-serif;
+    color: var(--color-text-primary);
+    margin: 0;
+    padding: 0;
+    background-color: var(--color-bg-primary);
+    @apply transition-colors duration-300;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+  }
+  
+  /* Theme transition classes */
+  .theme-transition,
+  .theme-transition * {
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 500ms;
+  }
+  
+  /* Global transition class for unified theme switching */
+  .transition-all {
+    transition: background-color 0.5s ease, color 0.5s ease, border-color 0.5s ease;
+  }
+  
+  /* Footer stays consistent in both modes */
+  .bg-primary.footer {
+    background-color: #006A71 !important;
+  }
+  
+  /* Navbar stays consistent in both modes */
+  .bg-primary.navbar {
+    background-color: #006A71 !important;
+  }
+  
+  /* Ensure smooth transitions for table rows */
+  tr {
+    transition: var(--transition-theme);
+  }
+}
+
+/* Legacy color classes - gradualmente da sostituire con le classi theme-* */
+.primary-color {
+  color: var(--color-brand-primary);
+}
+
+.dark .primary-color {
+  color: var(--color-brand-light);
+}
+
+.bg-primary {
+  background-color: var(--color-brand-primary);
+}
+
+.bg-light {
+  background-color: var(--color-bg-secondary);
+}
+
+.bg-beige {
+  background-color: var(--color-bg-tertiary);
+}
+
+/* Enhanced box shadows for better contrast */
+.shadow-enhanced {
+  box-shadow: 0 20px 25px -5px var(--color-shadow), 0 10px 10px -5px var(--color-shadow-strong);
+}
+
+/* Alternating row colors for tables */
+.table-alternate tbody tr:nth-child(odd) {
+  background-color: var(--color-bg-secondary);
+}
+
+.table-alternate tbody tr:nth-child(even) {
+  background-color: var(--color-bg-primary);
+} 

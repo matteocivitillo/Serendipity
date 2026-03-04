@@ -1,0 +1,10 @@
+{
+  "name": "Serendipity Yoga",
+  "short_name": "Serendipity",
+  "description": "Serendipity Yoga Studio - Find your balance",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#006A71",
+  "theme_color": "#006A71",
+  "icons": []
+} 

@@ -1,0 +1,89 @@
+/**
+ * Theme variables and shared styles for light and dark mode
+ * Centralizza gli stili del tema per tutta l'applicazione
+ */
+
+:root {
+  /* Light theme (default) */
+  --color-bg-primary: #FFFFFF;
+  --color-bg-secondary: #F9FAFB;
+  --color-bg-tertiary: #F2EFE7;
+  
+  --color-text-primary: #4B5563;
+  --color-text-secondary: #6B7280;
+  
+  --color-brand-primary: #006A71;
+  --color-brand-light: #9ACBD0;
+  
+  --color-shadow: rgba(0, 0, 0, 0.1);
+  --color-shadow-strong: rgba(0, 0, 0, 0.2);
+  
+  --transition-theme: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Dark theme variables */
+:root.dark {
+  --color-bg-primary: #1F2937;
+  --color-bg-secondary: #374151;
+  --color-bg-tertiary: #4B5563;
+  
+  --color-text-primary: #F9FAFB;
+  --color-text-secondary: #E5E7EB;
+  
+  --color-brand-primary: #006A71;
+  --color-brand-light: #9ACBD0;
+  
+  --color-shadow: rgba(0, 0, 0, 0.3);
+  --color-shadow-strong: rgba(0, 0, 0, 0.5);
+}
+
+/* Utility classes for applying theme colors */
+.theme-bg-primary {
+  background-color: var(--color-bg-primary);
+}
+
+.theme-bg-secondary {
+  background-color: var(--color-bg-secondary);
+}
+
+.theme-bg-tertiary {
+  background-color: var(--color-bg-tertiary);
+}
+
+.theme-text-primary {
+  color: var(--color-text-primary);
+}
+
+.theme-text-secondary {
+  color: var(--color-text-secondary);
+}
+
+.theme-brand-primary {
+  color: var(--color-brand-primary);
+}
+
+.theme-brand-light {
+  color: var(--color-brand-light);
+}
+
+.dark .theme-brand-color {
+  color: var(--color-brand-light);
+}
+
+.light .theme-brand-color {
+  color: var(--color-brand-primary);
+}
+
+/* Transizioni per il cambio tema */
+.theme-transition {
+  transition: var(--transition-theme);
+}
+
+/* Ombre tematiche */
+.theme-shadow {
+  box-shadow: 0 4px 6px var(--color-shadow), 0 1px 3px var(--color-shadow);
+}
+
+.theme-shadow-lg {
+  box-shadow: 0 10px 25px var(--color-shadow), 0 5px 10px var(--color-shadow-strong);
+} 
