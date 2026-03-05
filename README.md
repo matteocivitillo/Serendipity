@@ -4,7 +4,7 @@
 **Professor**: Franca Garzotto<br>
 **Assistant Professors**: Giovanni Caleffi and Matteo Secco <br>
 **Team**: Civitillo, Gandini, Vicenzotto, Ye <br>
-**Website**: ([https://hypermedia-applications-rho.vercel.app/](https://serendipity-delta.vercel.app/)) <br>
+**Website**: [https://serendipity-delta.vercel.app/](https://serendipity-delta.vercel.app/) <br>
 **Repository**: [GitHub](https://github.com/matteocivitillo/Serendipity) <br>
 
 ---
