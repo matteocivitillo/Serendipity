@@ -2,6 +2,7 @@
 export const API_URL = 'https://serendipity-vvni.onrender.com';
 //export const API_URL = 'http://127.0.0.1:8000';
 // Helper function for API requests
+
 export async function apiRequest(endpoint, options = {}) {
   const url = `${API_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
   
