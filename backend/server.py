@@ -10,7 +10,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 try:
-    db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
+    db_pool = pool.SimpleConnectionPool(1, 20, DATABASE_URL)
     if db_pool:
         print("Database connection pool created successfully")
 except Exception as e:
@@ -511,17 +511,6 @@ async def get_areas():
     areas_data = []
     
     for area in (areas_base or []):
-        image_url = area.get("image", "")
-        if image_url and "dcrgvkmnnavjahkprnkem.supabase" in image_url:
-            if not "/storage/v1/object/public/yoga/" in image_url:
-                area_title = area.get("title", "").lower()
-                if area_title == "bar":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/bar.jpg"
-                elif area_title == "play area":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/play_area.jpg"
-                elif area_title == "spa":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/spa.jpg"
-        area["image"] = image_url
         areas_data.append(area)
         
     return {"areas": areas_data}
@@ -530,21 +519,8 @@ async def get_areas():
 async def get_area(area_id: str):
     area = execute_query("SELECT * FROM areas WHERE id = %s", (area_id,), fetch_one=True)
     if area:
-        image_url = area.get("image", "")
-        if image_url and "dcrgvkmnnavjahkprnkem.supabase" in image_url:
-            if not "/storage/v1/object/public/yoga/" in image_url:
-                area_title = area.get("title", "").lower()
-                if area_title == "bar":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/bar.jpg"
-                elif area_title == "play area":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/play_area.jpg"
-                elif area_title == "spa":
-                    image_url = "https://dcrgvkmnnavjahkprnkem.supabase.co/storage/v1/object/public/yoga/spa.jpg"
-                area["image"] = image_url
         return {"area": area}
     return {"area": None}
-
-# ------------------- REVIEWS ------------------- #
 
 @app.get("/reviews")
 async def get_reviews(lang: str = "en"):
