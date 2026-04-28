@@ -1,4 +1,4 @@
-# Serendipity Yoga Center - Full-stack web app with FastAPI (Python), PostgreSQL, and Nuxt 3 — deployed on Vercel.
+# Serendipity Yoga Center - Full-stack web app with FastAPI (Python), PostgreSQL, and Nuxt 3
 
 **Course**: Hypermedia Applications – Web & Multimedia <br> -2024/25
 **Professor**: Franca Garzotto<br>
