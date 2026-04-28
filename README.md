@@ -1,6 +1,6 @@
-# Serendipity Yoga Center - Hypermedia Applications Project – 2024-2025
+# Serendipity Yoga Center - Full-stack web app with FastAPI (Python), PostgreSQL, and Nuxt 3 — deployed on Vercel.
 
-**Course**: Hypermedia Applications – Web & Multimedia <br>
+**Course**: Hypermedia Applications – Web & Multimedia <br> -2024/25
 **Professor**: Franca Garzotto<br>
 **Assistant Professors**: Giovanni Caleffi and Matteo Secco <br>
 **Team**: Civitillo, Gandini, Vicenzotto, Ye <br>
